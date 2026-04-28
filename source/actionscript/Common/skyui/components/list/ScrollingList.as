@@ -27,7 +27,15 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
 
     public var isPressOnMove: Boolean = false;
 
+    public var smoothScrollEnabled: Boolean = false;
+
+    public var smoothScrollDuration: Number = 150;
+
     private var _scrollPosition: Number = 0;
+
+    private var _visualScrollPosition: Number = 0;
+
+    private var _scrollTweener: skyui.components.list.ScrollTweener;
 
     public function get scrollPosition()
     {
@@ -73,10 +81,31 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
     public function ScrollingList()
     {
         super();
-        
+
         this._listHeight = this.background._height - this.topBorder - this.bottomBorder;
-        
+
         this._maxListIndex = Math.floor(this._listHeight / this.entryHeight);
+
+        this._scrollTweener = new skyui.components.list.ScrollTweener();
+
+        skyui.util.ConfigManager.registerLoadCallback(this, "onConfigLoad");
+        skyui.util.ConfigManager.registerUpdateCallback(this, "onConfigUpdate");
+    }
+
+    public function onConfigLoad(a_event: Object)
+    {
+        var smoothScroll = a_event.config.ListLayout.smoothScroll;
+        if (smoothScroll == undefined)
+            return;
+        if (smoothScroll.enabled != undefined)
+            this.smoothScrollEnabled = smoothScroll.enabled;
+        if (smoothScroll.durationMs != undefined)
+            this.smoothScrollDuration = smoothScroll.durationMs;
+    }
+
+    public function onConfigUpdate(a_event: Object)
+    {
+        this.onConfigLoad(a_event);
     }
 
 
@@ -139,28 +168,34 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
             this._bRequestUpdate = true;
             return;
         }
-        
+
+        var visualStart: Number = Math.floor(this._visualScrollPosition);
+        if (visualStart < 0)
+            visualStart = 0;
+        var fractional: Number = this._visualScrollPosition - visualStart;
+        var clipCount: Number = fractional > 0 ? this._maxListIndex + 1 : this._maxListIndex;
+
         // Prepare clips
-        this.setClipCount(this._maxListIndex);
-        
+        this.setClipCount(clipCount);
+
         var xStart = this.background._x + this.leftBorder;
-        var yStart = this.background._y + this.topBorder;
+        var yStart = this.background._y + this.topBorder - fractional * this.entryHeight;
         var h = 0;
 
         // Clear clipIndex for everything before the selected list portion
-        for (var i = 0; i < this.getListEnumSize() && i < this._scrollPosition ; i++)
+        for (var i = 0; i < this.getListEnumSize() && i < visualStart; i++)
             this.getListEnumEntry(i).clipIndex = undefined;
 
         this._listIndex = 0;
-        
+
         // Display the selected list portion of the list
-        for (var i = this._scrollPosition; i < this.getListEnumSize() && this._listIndex < this._maxListIndex; i++) {
+        for (var i = visualStart; i < this.getListEnumSize() && this._listIndex < clipCount; i++) {
             var entryClip = this.getClipByIndex(this._listIndex);
             var entryItem = this.getListEnumEntry(i);
 
             entryClip.itemIndex = entryItem.itemIndex;
             entryItem.clipIndex = this._listIndex;
-            
+
             entryClip.setEntry(entryItem, this.listState);
 
             entryClip._x = xStart;
@@ -171,11 +206,11 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
 
             ++this._listIndex;
         }
-        
+
         // Clear clipIndex for everything after the selected list portion
-        for (var i = this._scrollPosition + this._listIndex; i < this.getListEnumSize(); i++)
+        for (var i = visualStart + this._listIndex; i < this.getListEnumSize(); i++)
             this.getListEnumEntry(i).clipIndex = undefined;
-            
+
         // Select entry under the cursor for mouse-driven navigation
         if (this.isMouseDrivenNav) {
             for (var j = 0; j < this._listIndex; j++) {
@@ -186,10 +221,10 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
                 }
             }
         }
-                    
+
         if (this.scrollUpButton != undefined)
             this.scrollUpButton._visible = this._scrollPosition > 0;
-        if (this.scrollDownButton != undefined) 
+        if (this.scrollDownButton != undefined)
             this.scrollDownButton._visible = this._scrollPosition < this._maxScrollPosition;
     }
 
@@ -311,18 +346,55 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
     {
         if (this.disableInput)
             return;
-        
-        if (this.hitTest(_root._xmouse, _root._ymouse, true)) 
-        {
-            this.isMouseDrivenNav = true;
-            if (a_delta < 0)      this.scrollPosition += this.scrollDelta;
-            else if (a_delta > 0) this.scrollPosition -= this.scrollDelta;
+
+        if (!this.hitTest(_root._xmouse, _root._ymouse, true))
+            return;
+
+        this.isMouseDrivenNav = true;
+
+        var target: Number = this._scrollPosition;
+        if (a_delta < 0)      target += this.scrollDelta;
+        else if (a_delta > 0) target -= this.scrollDelta;
+
+        if (target < 0)
+            target = 0;
+        else if (target > this._maxScrollPosition)
+            target = this._maxScrollPosition;
+
+        if (target == this._scrollPosition)
+            return;
+
+        if (!this.smoothScrollEnabled) {
+            this.scrollPosition = target;
+            return;
         }
+
+        this._scrollTweener.tweenTo(this._visualScrollPosition, target, this.smoothScrollDuration);
+        this._scrollPosition = target;
+        if (this.scrollbar != undefined)
+            this.scrollbar.position = target;
+        this.UpdateList();
+        this.onEnterFrame = this.tickScrollTween;
     }
 
     private function onScroll(event: Object)
     {
-        this.updateScrollPosition(Math.floor(event.position + 0.5));
+        var newPos: Number = Math.floor(event.position + 0.5);
+        // Re-entry from our own wheel-tween scrollbar update; logical state already in sync.
+        if (newPos == this._scrollPosition)
+            return;
+        this.updateScrollPosition(newPos);
+    }
+
+    private function tickScrollTween()
+    {
+        var stillActive: Boolean = this._scrollTweener.tick();
+        this._visualScrollPosition = this._scrollTweener.currentPosition;
+        if (!stillActive) {
+            this._visualScrollPosition = this._scrollPosition;
+            delete this.onEnterFrame;
+        }
+        this.UpdateList();
     }
 
     // @override BasicList
@@ -389,6 +461,9 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
     private function updateScrollPosition(a_position: Number)
     {
         this._scrollPosition = a_position;
+        this._visualScrollPosition = a_position;
+        this._scrollTweener.cancel();
+        delete this.onEnterFrame;
         this.UpdateList();
     }
 
@@ -403,7 +478,8 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
     // @override BasicList
     private function getClipByIndex(a_index: Number)
     {
-        if (a_index < 0 || a_index >= this._maxListIndex)
+        // Allow one extra clip past _maxListIndex so a partially-visible row can render during a scroll tween.
+        if (a_index < 0 || a_index > this._maxListIndex)
             return undefined;
 
         return this._entryClipManager.getClip(a_index);

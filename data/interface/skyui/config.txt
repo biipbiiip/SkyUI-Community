@@ -57,6 +57,10 @@ vars.n_iconSize.value = 18
 
 defaults.entryWidth = 530
 
+; Smooth scrolling -------------------------------------------------------
+smoothScroll.enabled = true
+smoothScroll.durationMs = 150
+
 ; Default text format defaults -------------------------------------------------------
 defaults.entry.textFormat.font = '$EverywhereMediumFont'
 defaults.entry.textFormat.align = right
