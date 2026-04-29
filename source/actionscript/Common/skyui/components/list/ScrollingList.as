@@ -48,11 +48,15 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
     private static var TICK_INTERVAL_MS: Number = 16;       // ~60 fps
 
     // Items live in this masked sub-clip so partial rows during a glide don't bleed past
-    // the list bounds onto the header / scrollbar. The mask is the existing stage-authored
-    // `background` clip (the same shape the dev tried in setMask(this.background) -- but
-    // applied to the entries container, not `this`, so the header stays visible).
-    // EntryClipManager.growPool detects this field and attaches entries here.
+    // the list bounds onto the header / scrollbar. EntryClipManager.growPool detects this
+    // field and attaches entries here.
     public var entriesContainer: MovieClip;
+
+    // Mask shape -- drawn slightly wider than `background` because some columns (notably the
+    // equip-icon column with its negative `indent = -28`) render *outside* the background's
+    // left edge. Using setMask(this.background) would clip those off.
+    private var _entriesMask: MovieClip;
+    private static var ENTRIES_MASK_LEFT_PAD: Number = 32;     // px slack on the left for negative-indent columns
 
     public function get scrollPosition()
     {
@@ -90,6 +94,35 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
 
         if (this.scrollbar != undefined)
             this.scrollbar.height = this._listHeight;
+
+        // Items area changed -- regenerate the mask shape.
+        this.rebuildEntriesMask();
+    }
+
+    // (Re)builds the entries mask MovieClip. Sized to `background` plus left padding so
+    // negative-indent columns (e.g. the equip icon) remain visible.
+    private function rebuildEntriesMask()
+    {
+        if (this.entriesContainer == undefined || this.background == undefined)
+            return;
+
+        if (this._entriesMask != undefined)
+            this._entriesMask.removeMovieClip();
+
+        this._entriesMask = this.createEmptyMovieClip("_entriesMask", this.getNextHighestDepth());
+        var pad: Number = skyui.components.list.ScrollingList.ENTRIES_MASK_LEFT_PAD;
+        var x0: Number = this.background._x - pad;
+        var y0: Number = this.background._y;
+        var w: Number = this.background._width + pad;
+        var h: Number = this.background._height;
+        this._entriesMask.beginFill(0);
+        this._entriesMask.moveTo(x0, y0);
+        this._entriesMask.lineTo(x0 + w, y0);
+        this._entriesMask.lineTo(x0 + w, y0 + h);
+        this._entriesMask.lineTo(x0, y0 + h);
+        this._entriesMask.endFill();
+
+        this.entriesContainer.setMask(this._entriesMask);
     }
 
 
@@ -109,12 +142,12 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
         skyui.util.ConfigManager.registerLoadCallback(this, "onConfigLoad");
         skyui.util.ConfigManager.registerUpdateCallback(this, "onConfigUpdate");
 
-        // Items container masked by the existing `background` shape. Entries become children
-        // of entriesContainer (see EntryClipManager.growPool); header / scrollbar / etc. stay
-        // direct children of `this` and aren't affected by the mask.
+        // Items container + a programmatic mask. The mask covers `background`'s rectangle
+        // plus padding on the left so columns with a negative indent (equip icon at -28)
+        // remain visible. Header / scrollbar / etc. stay direct children of `this`, outside
+        // entriesContainer, so they aren't touched by the mask.
         this.entriesContainer = this.createEmptyMovieClip("entriesContainer", this.getNextHighestDepth());
-        if (this.entriesContainer != undefined && this.background != undefined)
-            this.entriesContainer.setMask(this.background);
+        this.rebuildEntriesMask();
     }
 
     public function onConfigLoad(a_event: Object)
