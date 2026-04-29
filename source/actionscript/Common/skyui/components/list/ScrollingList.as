@@ -27,20 +27,25 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
 
     public var isPressOnMove: Boolean = false;
 
-    public var smoothScrollEnabled: Boolean = false;
+    // Default to true so momentum is on out of the box even before onConfigLoad fires.
+    // MCM-driven overrides still flip it back to false for the vanilla-1-row feel.
+    public var smoothScrollEnabled: Boolean = true;
 
-    public var smoothScrollDuration: Number = 150;
+    public var smoothScrollDuration: Number = 250;
 
     private var _scrollPosition: Number = 0;
 
     private var _visualScrollPosition: Number = 0;
 
-    private var _tweenStartPosition: Number = 0;
-    private var _tweenTargetPosition: Number = 0;
-    private var _tweenStartTime: Number = 0;
-    private var _tweenActive: Boolean = false;
+    // Velocity-based momentum scroller. State + math live in ScrollTweener so the helper class
+    // can be authored into the SWF once via the FFDec GUI and reused cleanly.
+    private var _scrollTweener: skyui.components.list.ScrollTweener;
+    private var _isMomentumActive: Boolean = false;
 
-    public var entriesContainer: MovieClip;
+    // Per-frame ticker. Uses setInterval rather than MovieClip.onEnterFrame because
+    // onEnterFrame doesn't reliably fire for runtime-driven MovieClips in Scaleform/GFx.
+    private var _tickIntervalId: Number = -1;
+    private static var TICK_INTERVAL_MS: Number = 16;       // ~60 fps
 
     public function get scrollPosition()
     {
@@ -78,9 +83,6 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
 
         if (this.scrollbar != undefined)
             this.scrollbar.height = this._listHeight;
-
-        if (this.entriesContainer != undefined)
-            this.drawEntriesMask();
     }
 
 
@@ -91,8 +93,9 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
         super();
 
         this._listHeight = this.background._height - this.topBorder - this.bottomBorder;
-
         this._maxListIndex = Math.floor(this._listHeight / this.entryHeight);
+
+        this._scrollTweener = new skyui.components.list.ScrollTweener();
 
         skyui.util.ConfigManager.registerLoadCallback(this, "onConfigLoad");
         skyui.util.ConfigManager.registerUpdateCallback(this, "onConfigUpdate");
@@ -103,6 +106,9 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
         var smoothScroll = a_event.config.ListLayout.smoothScroll;
         if (smoothScroll == undefined)
             return;
+        // ConfigManager.parseValueString already converts "true"/"false"/numerics, so values
+        // arrive here as real booleans/numbers regardless of whether they came from config.txt
+        // or a Papyrus override.
         if (smoothScroll.enabled != undefined)
             this.smoothScrollEnabled = smoothScroll.enabled;
         if (smoothScroll.durationMs != undefined)
@@ -126,34 +132,6 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
             this.scrollbar._y = this.background._y + this.topBorder;
             this.scrollbar.height = this._listHeight;
         }
-
-        // Container holds entry clips so a tight mask can clip overflow during a scroll tween
-        // without hiding sibling stage elements (header, scroll buttons, etc.) that live on `this`.
-        this.entriesContainer = this.createEmptyMovieClip("entriesContainer", this.getNextHighestDepth());
-        this.entriesContainer._x = this.background._x + this.leftBorder;
-        this.entriesContainer._y = this.background._y + this.topBorder;
-        this.drawEntriesMask();
-    }
-
-    private var _entriesMask: MovieClip;
-
-    private function drawEntriesMask()
-    {
-        var w: Number = this.background._width - this.leftBorder - this.rightBorder;
-        var h: Number = this._listHeight;
-        if (this._entriesMask == undefined) {
-            this._entriesMask = this.createEmptyMovieClip("entriesMask", this.getNextHighestDepth());
-            this._entriesMask._x = this.background._x + this.leftBorder;
-            this._entriesMask._y = this.background._y + this.topBorder;
-            this.entriesContainer.setMask(this._entriesMask);
-        }
-        this._entriesMask.clear();
-        this._entriesMask.beginFill(0x000000);
-        this._entriesMask.moveTo(0, 0);
-        this._entriesMask.lineTo(w, 0);
-        this._entriesMask.lineTo(w, h);
-        this._entriesMask.lineTo(0, h);
-        this._entriesMask.endFill();
     }
 
     // @override BasicList
@@ -212,9 +190,8 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
         // Prepare clips
         this.setClipCount(clipCount);
 
-        // Coords are in entriesContainer space (positioned at the entry region top-left).
-        var xStart = 0;
-        var yStart = -fractional * this.entryHeight;
+        var xStart = this.background._x + this.leftBorder;
+        var yStart = this.background._y + this.topBorder - fractional * this.entryHeight;
         var h = 0;
 
         // Clear clipIndex for everything before the selected list portion
@@ -246,8 +223,11 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
         for (var i = visualStart + this._listIndex; i < this.getListEnumSize(); i++)
             this.getListEnumEntry(i).clipIndex = undefined;
 
-        // Select entry under the cursor for mouse-driven navigation
-        if (this.isMouseDrivenNav) {
+        // Select entry under the cursor for mouse-driven navigation.
+        // Skip while momentum scrolling is active: cursor-on-clip reselection would yank
+        // scrollPosition back to the cursor and snap the visual progress. The final UpdateList
+        // call after momentum settles will re-run reselection naturally.
+        if (this.isMouseDrivenNav && !this._isMomentumActive) {
             for (var j = 0; j < this._listIndex; j++) {
                 var clip = this.getClipByIndex(j);
                 if (clip != undefined && clip._visible && clip.itemIndex != undefined && clip.hitTest(_root._xmouse, _root._ymouse, true)) {
@@ -387,38 +367,38 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
 
         this.isMouseDrivenNav = true;
 
-        var target: Number = this._scrollPosition;
-        if (a_delta < 0)      target += this.scrollDelta;
-        else if (a_delta > 0) target -= this.scrollDelta;
-
-        if (target < 0)
-            target = 0;
-        else if (target > this._maxScrollPosition)
-            target = this._maxScrollPosition;
-
-        if (target == this._scrollPosition)
-            return;
-
+        // Vanilla 1-row path when smooth scrolling is off in MCM.
         if (!this.smoothScrollEnabled) {
-            this.scrollPosition = target;
+            var simpleTarget: Number = this._scrollPosition;
+            if (a_delta < 0)      simpleTarget += this.scrollDelta;
+            else if (a_delta > 0) simpleTarget -= this.scrollDelta;
+            if (simpleTarget < 0) simpleTarget = 0;
+            else if (simpleTarget > this._maxScrollPosition) simpleTarget = this._maxScrollPosition;
+            if (simpleTarget != this._scrollPosition)
+                this.scrollPosition = simpleTarget;
             return;
         }
 
-        this._tweenStartPosition = this._visualScrollPosition;
-        this._tweenTargetPosition = target;
-        this._tweenStartTime = getTimer();
-        this._tweenActive = true;
-        this._scrollPosition = target;
-        if (this.scrollbar != undefined)
-            this.scrollbar.position = target;
-        this.UpdateList();
-        this.onEnterFrame = this.tickScrollTween;
+        // Momentum path: each tick adds a *one-row* impulse. An isolated tick scrolls about
+        // a row; rapid ticks accumulate velocity for a fast glide ("the more you scroll, the
+        // quicker it scrolls"). A tick in the opposite direction halts and reverses.
+        var direction: Number = a_delta < 0 ? 1 : -1;
+
+        this._scrollTweener.impulse(direction, this.scrollDelta, this.smoothScrollDuration);
+
+        if (!this._isMomentumActive) {
+            this._isMomentumActive = true;
+            this._tickIntervalId = setInterval(this, "tickScrollTween", skyui.components.list.ScrollingList.TICK_INTERVAL_MS);
+        }
     }
 
     private function onScroll(event: Object)
     {
+        // Ignore the scrollbar's own scroll event while we're driving the position via momentum;
+        // accepting it would cancel velocity and snap the visual progress.
+        if (this._isMomentumActive)
+            return;
         var newPos: Number = Math.floor(event.position + 0.5);
-        // Re-entry from our own wheel-tween scrollbar update; logical state already in sync.
         if (newPos == this._scrollPosition)
             return;
         this.updateScrollPosition(newPos);
@@ -426,19 +406,39 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
 
     private function tickScrollTween()
     {
-        if (!this._tweenActive) {
-            delete this.onEnterFrame;
-            return;
+        var delta: Number = this._scrollTweener.tick();
+        this._visualScrollPosition += delta;
+
+        // Bounds: clamp and kill velocity at edges.
+        if (this._visualScrollPosition <= 0) {
+            this._visualScrollPosition = 0;
+            this._scrollTweener.cancel();
+        } else if (this._visualScrollPosition >= this._maxScrollPosition) {
+            this._visualScrollPosition = this._maxScrollPosition;
+            this._scrollTweener.cancel();
         }
-        var t: Number = (getTimer() - this._tweenStartTime) / this.smoothScrollDuration;
-        if (t >= 1) {
-            this._visualScrollPosition = this._tweenTargetPosition;
-            this._tweenActive = false;
-            delete this.onEnterFrame;
+
+        if (this._scrollTweener.isSettled()) {
+            this._scrollTweener.settle();
+            this._visualScrollPosition = Math.round(this._visualScrollPosition);
+            this._scrollPosition = this._visualScrollPosition;
+            this._isMomentumActive = false;
+            if (this._tickIntervalId != -1) {
+                clearInterval(this._tickIntervalId);
+                this._tickIntervalId = -1;
+            }
+            if (this.scrollbar != undefined)
+                this.scrollbar.position = this._scrollPosition;
         } else {
-            var eased: Number = 1 - Math.pow(1 - t, 3);
-            this._visualScrollPosition = this._tweenStartPosition + (this._tweenTargetPosition - this._tweenStartPosition) * eased;
+            // Keep _scrollPosition in sync at row granularity so observers see sensible values.
+            this._scrollPosition = Math.round(this._visualScrollPosition);
+            // Drive the scrollbar thumb at sub-row precision so it glides with the items.
+            // Safe because onScroll early-returns while _isMomentumActive, preventing the
+            // scrollbar's resulting scroll event from cancelling our tween.
+            if (this.scrollbar != undefined)
+                this.scrollbar.position = this._visualScrollPosition;
         }
+
         this.UpdateList();
     }
 
@@ -507,8 +507,12 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
     {
         this._scrollPosition = a_position;
         this._visualScrollPosition = a_position;
-        this._tweenActive = false;
-        delete this.onEnterFrame;
+        this._scrollTweener.cancel();
+        this._isMomentumActive = false;
+        if (this._tickIntervalId != -1) {
+            clearInterval(this._tickIntervalId);
+            this._tickIntervalId = -1;
+        }
         this.UpdateList();
     }
 
