@@ -20,15 +20,15 @@ class skyui.components.list.ScrollTweener
     // Friction balances "snappy single tick" against "rapid ticks accumulate momentum".
     // 0.85 gives ~13% velocity after 200ms -- slow enough that rapid ticks (sub-100ms apart)
     // stack noticeably, but a single isolated tick settles in ~300ms instead of dragging.
-    private static var FRICTION_PER_FRAME: Number = 0.85;
+    private static var FRICTION_PER_FRAME: Number = 0.50;
     private static var FRAME_REFERENCE_MS: Number = 16;
     private static var VELOCITY_STOP_THRESHOLD: Number = 0.0005;
 
     // Cadence-based acceleration tunables. ACCEL_WINDOW_MS is the time gap above which
     // a tick is treated as "fresh" (1x impulse). ACCEL_MAX_MULT is the multiplier applied
     // when ticks are landing instantaneously back-to-back. The curve between is quadratic.
-    private static var ACCEL_WINDOW_MS: Number = 200;
-    private static var ACCEL_MAX_MULT: Number = 9;
+    private static var ACCEL_WINDOW_MS: Number = 300;
+    private static var ACCEL_MAX_MULT: Number = 18;
 
     public function ScrollTweener()
     {

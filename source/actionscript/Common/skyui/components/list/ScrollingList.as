@@ -31,7 +31,7 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
     // MCM-driven overrides still flip it back to false for the vanilla-1-row feel.
     public var smoothScrollEnabled: Boolean = true;
 
-    public var smoothScrollDuration: Number = 250;
+    public var smoothScrollDuration: Number = 150;
 
     private var _scrollPosition: Number = 0;
 
