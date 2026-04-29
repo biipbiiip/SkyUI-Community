@@ -35,7 +35,12 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
 
     private var _visualScrollPosition: Number = 0;
 
-    private var _scrollTweener: skyui.components.list.ScrollTweener;
+    private var _tweenStartPosition: Number = 0;
+    private var _tweenTargetPosition: Number = 0;
+    private var _tweenStartTime: Number = 0;
+    private var _tweenActive: Boolean = false;
+
+    public var entriesContainer: MovieClip;
 
     public function get scrollPosition()
     {
@@ -70,9 +75,12 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
     public function set listHeight(a_height: Number)
     {
         this._listHeight = this.background._height = a_height;
-        
+
         if (this.scrollbar != undefined)
             this.scrollbar.height = this._listHeight;
+
+        if (this.entriesContainer != undefined)
+            this.drawEntriesMask();
     }
 
 
@@ -85,8 +93,6 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
         this._listHeight = this.background._height - this.topBorder - this.bottomBorder;
 
         this._maxListIndex = Math.floor(this._listHeight / this.entryHeight);
-
-        this._scrollTweener = new skyui.components.list.ScrollTweener();
 
         skyui.util.ConfigManager.registerLoadCallback(this, "onConfigLoad");
         skyui.util.ConfigManager.registerUpdateCallback(this, "onConfigUpdate");
@@ -120,6 +126,34 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
             this.scrollbar._y = this.background._y + this.topBorder;
             this.scrollbar.height = this._listHeight;
         }
+
+        // Container holds entry clips so a tight mask can clip overflow during a scroll tween
+        // without hiding sibling stage elements (header, scroll buttons, etc.) that live on `this`.
+        this.entriesContainer = this.createEmptyMovieClip("entriesContainer", this.getNextHighestDepth());
+        this.entriesContainer._x = this.background._x + this.leftBorder;
+        this.entriesContainer._y = this.background._y + this.topBorder;
+        this.drawEntriesMask();
+    }
+
+    private var _entriesMask: MovieClip;
+
+    private function drawEntriesMask()
+    {
+        var w: Number = this.background._width - this.leftBorder - this.rightBorder;
+        var h: Number = this._listHeight;
+        if (this._entriesMask == undefined) {
+            this._entriesMask = this.createEmptyMovieClip("entriesMask", this.getNextHighestDepth());
+            this._entriesMask._x = this.background._x + this.leftBorder;
+            this._entriesMask._y = this.background._y + this.topBorder;
+            this.entriesContainer.setMask(this._entriesMask);
+        }
+        this._entriesMask.clear();
+        this._entriesMask.beginFill(0x000000);
+        this._entriesMask.moveTo(0, 0);
+        this._entriesMask.lineTo(w, 0);
+        this._entriesMask.lineTo(w, h);
+        this._entriesMask.lineTo(0, h);
+        this._entriesMask.endFill();
     }
 
     // @override BasicList
@@ -178,8 +212,9 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
         // Prepare clips
         this.setClipCount(clipCount);
 
-        var xStart = this.background._x + this.leftBorder;
-        var yStart = this.background._y + this.topBorder - fractional * this.entryHeight;
+        // Coords are in entriesContainer space (positioned at the entry region top-left).
+        var xStart = 0;
+        var yStart = -fractional * this.entryHeight;
         var h = 0;
 
         // Clear clipIndex for everything before the selected list portion
@@ -369,7 +404,10 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
             return;
         }
 
-        this._scrollTweener.tweenTo(this._visualScrollPosition, target, this.smoothScrollDuration);
+        this._tweenStartPosition = this._visualScrollPosition;
+        this._tweenTargetPosition = target;
+        this._tweenStartTime = getTimer();
+        this._tweenActive = true;
         this._scrollPosition = target;
         if (this.scrollbar != undefined)
             this.scrollbar.position = target;
@@ -388,11 +426,18 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
 
     private function tickScrollTween()
     {
-        var stillActive: Boolean = this._scrollTweener.tick();
-        this._visualScrollPosition = this._scrollTweener.currentPosition;
-        if (!stillActive) {
-            this._visualScrollPosition = this._scrollPosition;
+        if (!this._tweenActive) {
             delete this.onEnterFrame;
+            return;
+        }
+        var t: Number = (getTimer() - this._tweenStartTime) / this.smoothScrollDuration;
+        if (t >= 1) {
+            this._visualScrollPosition = this._tweenTargetPosition;
+            this._tweenActive = false;
+            delete this.onEnterFrame;
+        } else {
+            var eased: Number = 1 - Math.pow(1 - t, 3);
+            this._visualScrollPosition = this._tweenStartPosition + (this._tweenTargetPosition - this._tweenStartPosition) * eased;
         }
         this.UpdateList();
     }
@@ -462,7 +507,7 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
     {
         this._scrollPosition = a_position;
         this._visualScrollPosition = a_position;
-        this._scrollTweener.cancel();
+        this._tweenActive = false;
         delete this.onEnterFrame;
         this.UpdateList();
     }
