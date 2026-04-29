@@ -47,6 +47,13 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
     private var _tickIntervalId: Number = -1;
     private static var TICK_INTERVAL_MS: Number = 16;       // ~60 fps
 
+    // Items live in this masked sub-clip so partial rows during a glide don't bleed past
+    // the list bounds onto the header / scrollbar. The mask is the existing stage-authored
+    // `background` clip (the same shape the dev tried in setMask(this.background) -- but
+    // applied to the entries container, not `this`, so the header stays visible).
+    // EntryClipManager.growPool detects this field and attaches entries here.
+    public var entriesContainer: MovieClip;
+
     public function get scrollPosition()
     {
         return this._scrollPosition;
@@ -97,8 +104,17 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
 
         this._scrollTweener = new skyui.components.list.ScrollTweener();
 
+        // Register config callbacks BEFORE the container/mask wiring so even if the latter
+        // hits a Scaleform quirk, smoothScrollEnabled / smoothScrollDuration still come in.
         skyui.util.ConfigManager.registerLoadCallback(this, "onConfigLoad");
         skyui.util.ConfigManager.registerUpdateCallback(this, "onConfigUpdate");
+
+        // Items container masked by the existing `background` shape. Entries become children
+        // of entriesContainer (see EntryClipManager.growPool); header / scrollbar / etc. stay
+        // direct children of `this` and aren't affected by the mask.
+        this.entriesContainer = this.createEmptyMovieClip("entriesContainer", this.getNextHighestDepth());
+        if (this.entriesContainer != undefined && this.background != undefined)
+            this.entriesContainer.setMask(this.background);
     }
 
     public function onConfigLoad(a_event: Object)
