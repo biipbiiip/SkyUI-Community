@@ -416,8 +416,12 @@ class skyui.components.list.ScrollingList extends skyui.components.list.BasicLis
 
         this.isMouseDrivenNav = true;
 
-        // Vanilla 1-row path when smooth scrolling is off in MCM.
-        if (!this.smoothScrollEnabled) {
+        // Vanilla 1-row path when smooth scrolling is off in MCM, or when ScrollTweener
+        // isn't authored into this SWF (e.g. craftingmenu.swf inherits ScrollingList from
+        // upstream's PR #182 but doesn't yet have a ScrollTweener class slot, so
+        // `new ScrollTweener()` returned undefined). Without this fallback, _scrollTweener.tick()
+        // returns undefined and poisons _visualScrollPosition with NaN.
+        if (!this.smoothScrollEnabled || this._scrollTweener == undefined || this._scrollTweener.tick == undefined) {
             var simpleTarget: Number = this._scrollPosition;
             if (a_delta < 0)      simpleTarget += this.scrollDelta;
             else if (a_delta > 0) simpleTarget -= this.scrollDelta;
